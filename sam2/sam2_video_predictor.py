@@ -58,6 +58,10 @@ class SAM2VideoPredictor(SAM2Base):
         inference_state = {}
         inference_state["images"] = images
         inference_state["num_frames"] = len(images)
+        # Store the original video path for later access to original frames
+        inference_state["video_path"] = video_path
+        # Store the image size used in the model for reference
+        inference_state["image_size"] = self.image_size
         # whether to offload the video frames to CPU memory
         # turning on this option saves the GPU memory with only a very small overhead
         inference_state["offload_video_to_cpu"] = offload_video_to_cpu

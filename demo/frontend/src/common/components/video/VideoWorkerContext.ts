@@ -96,7 +96,7 @@ export default class VideoWorkerContext {
   private _frameIndex: number = 0;
   private _isPlaying: boolean = false;
   private _playbackRAFHandle: number | null = null;
-  private _playbackTimeoutHandle: NodeJS.Timeout | null = null;
+  private _playbackTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private _isDrawing: boolean = false;
   private _glObjects: WebGL2RenderingContext | null = null;
   private _glBackground: WebGL2RenderingContext | null = null;
@@ -388,26 +388,54 @@ export default class VideoWorkerContext {
       'cannot encode video because there is no decoded video available',
     );
 
-    const canvas = new OffscreenCanvas(this.width, this.height);
-    const ctx = canvas.getContext('2d', {willReadFrequently: true});
+    // Log information about the video being encoded
+    console.log('Encoding video with dimensions:', this.width, 'x', this.height);
+    console.log('Total frames to encode:', decodedVideo.frames.length);
+    console.log('Original video FPS:', decodedVideo.fps);
+
+    // Use the actual original video dimensions
+    const encodingWidth = decodedVideo.width;
+    const encodingHeight = decodedVideo.height;
+    console.log('Using encoding dimensions:', encodingWidth, 'x', encodingHeight);
+
+    // Create encoding canvas - in Web Worker context, we can only use OffscreenCanvas
+    const encodingCanvas = new OffscreenCanvas(encodingWidth, encodingHeight);
+    const encodingCtx = encodingCanvas.getContext('2d', {willReadFrequently: true});
     invariant(
-      ctx !== null,
-      'cannot encode video because failed to construct offscreen canvas context',
+      encodingCtx !== null,
+      'cannot encode video because failed to construct encoding canvas context',
     );
 
-    const form = new CanvasForm(ctx);
+    // Create a form for the encoding canvas
+    const form = new CanvasForm(encodingCtx);
 
+    // Prepare main canvas to ensure effects are applied properly
+    if (this._canvas && this._ctx) {
+      // Make sure our main canvas has correct dimensions
+      this._canvas.width = encodingWidth;
+      this._canvas.height = encodingHeight;
+      console.log('Canvas dimensions set to:', this._canvas.width, 'x', this._canvas.height);
+    }
+
+    // We've already checked decodedVideo isn't null at the beginning of the method
+    // but TypeScript needs reassurance
+    invariant(decodedVideo !== null, 'decodedVideo cannot be null at this point');
+    
     const file = await encodeVideo(
-      this.width,
-      this.height,
+      encodingWidth,
+      encodingHeight,
       decodedVideo.frames.length,
-      this._framesGenerator(decodedVideo, canvas, form),
+      this._framesGenerator(decodedVideo, encodingCanvas, form),
       progress => {
         this.sendResponse<EncodingStateUpdateResponse>('encodingStateUpdate', {
           progress,
         });
       },
     );
+
+    // Log the size of the encoded file
+    console.log('Encoded file size (bytes):', file.byteLength);
+    
     this.sendResponse<EncodingCompletedResponse>(
       'encodingCompleted',
       {
@@ -419,27 +447,103 @@ export default class VideoWorkerContext {
 
   private async *_framesGenerator(
     decodedVideo: DecodedVideo,
-    canvas: OffscreenCanvas,
+    encodingCanvas: OffscreenCanvas,
     form: CanvasForm,
   ): AsyncGenerator<ImageFrame, undefined> {
     const frames = decodedVideo.frames;
-
+    console.log(`Starting frame generation process for ${frames.length} frames`);
+    
+    // Make sure encoding canvas has the right dimensions
+    encodingCanvas.width = decodedVideo.width;
+    encodingCanvas.height = decodedVideo.height;
+    console.log(`Confirmed encoding canvas dimensions: ${encodingCanvas.width}x${encodingCanvas.height}`);
+    
+    // Process every single frame in the original video
     for (let frameIndex = 0; frameIndex < frames.length; ++frameIndex) {
-      await this._drawFrameImpl(form, frameIndex, true);
-
+      // Log progress for every 10th frame
+      if (frameIndex % 10 === 0) {
+        console.log(`Processing frame ${frameIndex} of ${frames.length}`);
+      }
+      
       const frame = frames[frameIndex];
-      const videoFrame = new VideoFrame(canvas, {
-        timestamp: frame.bitmap.timestamp,
-      });
-
-      yield {
-        bitmap: videoFrame,
-        timestamp: frame.timestamp,
-        duration: frame.duration,
-      };
-
-      videoFrame.close();
+      
+      // APPROACH 1: Try to use the original frame bitmap directly when possible
+      try {
+        // Try to create a VideoFrame directly from the original frame's bitmap
+        // This is the most efficient method when it works
+        const videoFrame = new VideoFrame(frame.bitmap, {
+          timestamp: frame.timestamp,
+          duration: frame.duration,
+        });
+        
+        // Log the timestamp and duration of frames occasionally
+        if (frameIndex % 30 === 0) {
+          console.log(`Frame ${frameIndex} timestamp: ${frame.timestamp}, duration: ${frame.duration}`);
+        }
+        
+        yield {
+          bitmap: videoFrame,
+          timestamp: frame.timestamp,
+          duration: frame.duration,
+        };
+        
+        videoFrame.close();
+        continue; // Skip to next frame if this method worked
+      } catch (e) {
+        // If direct approach failed, fall back to drawing on canvas
+        console.log(`Direct frame approach failed for frame ${frameIndex}, using canvas fallback`);
+      }
+      
+      // APPROACH 2: Clear the canvas and draw the frame
+      try {
+        // Clear the frame for a fresh render
+        form.ctx.clearRect(0, 0, encodingCanvas.width, encodingCanvas.height);
+        
+        // If we have a main canvas, try to use it
+        if (this._canvas && this._form) {
+          // Render this specific frame with all effects to the main canvas
+          await this._drawFrameImpl(this._form, frameIndex, true);
+          
+          // Then copy from main canvas to encoding canvas
+          try {
+            // Draw directly from the main canvas to encoding canvas
+            form.ctx.drawImage(this._canvas, 0, 0);
+          } catch (e) {
+            console.error('Error copying from main canvas to encoding canvas:', e);
+            
+            // Fallback: draw the original frame directly to encoding canvas
+            form.ctx.drawImage(frame.bitmap, 0, 0, encodingCanvas.width, encodingCanvas.height);
+          }
+        } else {
+          // No main canvas available, draw the original frame directly
+          form.ctx.drawImage(frame.bitmap, 0, 0, encodingCanvas.width, encodingCanvas.height);
+        }
+        
+        // Create a video frame from the encoding canvas
+        const videoFrame = new VideoFrame(encodingCanvas, {
+          timestamp: frame.bitmap.timestamp,
+          duration: frame.duration,
+        });
+        
+        // Log the timestamp and duration of frames occasionally
+        if (frameIndex % 30 === 0) {
+          console.log(`Frame ${frameIndex} timestamp: ${frame.timestamp}, duration: ${frame.duration}`);
+        }
+        
+        yield {
+          bitmap: videoFrame,
+          timestamp: frame.timestamp,
+          duration: frame.duration,
+        };
+        
+        videoFrame.close();
+      } catch (e) {
+        console.error(`Failed to process frame ${frameIndex}:`, e);
+        // Continue to next frame even if this one failed
+      }
     }
+    
+    console.log('Finished generating all frames for encoding');
   }
 
   public enableStats() {

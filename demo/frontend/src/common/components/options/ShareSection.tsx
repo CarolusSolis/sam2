@@ -14,11 +14,19 @@
  * limitations under the License.
  */
 import DownloadOption from './DownloadOption';
+import DownloadObjectOnlyOption from './DownloadObjectOnlyOption';
 
 export default function ShareSection() {
   return (
     <div className="p-5 md:p-8">
-      <DownloadOption />
+      <div className="flex flex-col space-y-4">
+        <h3 className="text-white text-base font-medium mb-2">Download Options</h3>
+        <DownloadOption />
+        <DownloadObjectOnlyOption />
+        <p className="text-gray-300 text-xs mt-2">
+          The "Download Object Only" option provides a high-quality video with the background removed.
+        </p>
+      </div>
     </div>
   );
 }

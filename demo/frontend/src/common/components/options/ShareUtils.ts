@@ -34,8 +34,11 @@ export async function handleSaveVideo(
   });
 }
 
-export function getFileName() {
+export function getFileName(effectType?: string) {
   const date = new Date();
   const timestamp = date.getTime();
+  if (effectType) {
+    return `sam2_${effectType}_video_${timestamp}.mp4`;
+  }
   return `sam2_masked_video_${timestamp}.mp4`;
 }

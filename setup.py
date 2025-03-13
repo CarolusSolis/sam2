@@ -46,6 +46,7 @@ EXTRA_PACKAGES = {
         "eva-decord>=0.6.1",
         "gunicorn>=23.0.0",
         "imagesize>=1.4.1",
+        "opencv-python>=4.7.0",
         "pycocotools>=2.0.8",
         "strawberry-graphql>=0.243.0",
     ],
