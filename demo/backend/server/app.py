@@ -13,7 +13,17 @@ import subprocess
 import tempfile
 import numpy as np
 import cv2
+import sys
 from typing import Any, Generator
+
+# Configure logging to output to stdout with appropriate level
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 from app_conf import (
     GALLERY_PATH,
@@ -181,8 +191,24 @@ def gen_track_with_mask_stream(
             fps = inference_state.get("fps", 30)
             
             # Create a directory to store the debug videos
-            debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_videos")
+            debug_base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_videos")
+            os.makedirs(debug_base_dir, exist_ok=True)
+            
+            # Create session-specific directory using just the session ID
+            debug_dir = os.path.join(debug_base_dir, session_id)
             os.makedirs(debug_dir, exist_ok=True)
+            
+            # Create directory for object-only frames
+            frames_output_dir = os.path.join(debug_dir, "object_only_frames")
+            os.makedirs(frames_output_dir, exist_ok=True)
+            
+            # Copy original video to debug directory
+            original_video_output = os.path.join(debug_dir, "original_video.mp4")
+            try:
+                shutil.copy(video_path, original_video_output)
+                logger.info(f"Copied original video to {original_video_output}")
+            except Exception as e:
+                logger.warning(f"Failed to copy original video: {e}")
             
             # Create temporary directories for frames and output
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -192,20 +218,9 @@ def gen_track_with_mask_stream(
                 # Sort frames by index to ensure correct order
                 all_frames_with_masks.sort(key=lambda x: x['frame_index'])
                 
-                # Extract original frames using ffmpeg
+                # Extract video information using ffmpeg
                 try:
-                    # Extract 5 frames for initial testing/debugging
-                    logger.info(f"Extracting frames from original video: {video_path}")
-                    extract_cmd = [
-                        "ffmpeg",
-                        "-i", video_path,  # Input video
-                        "-vf", "select='eq(n,0)+eq(n,1)+eq(n,2)+eq(n,3)+eq(n,4)'",  # Just get first 5 frames for testing
-                        "-vsync", "0",     # Prevent frame dropping
-                        "-q:v", "1",       # High quality
-                        os.path.join(debug_dir, "original_frame_%03d.png")  # Output pattern
-                    ]
-                    subprocess.run(extract_cmd, check=True)
-                    logger.info("Successfully extracted test frames")
+                    logger.info(f"Processing original video: {video_path}")
                     
                     # Get video properties using ffprobe
                     probe_cmd = [
@@ -234,8 +249,7 @@ def gen_track_with_mask_stream(
                     logger.error(f"Error extracting frames from original video: {e}")
                     raise ValueError(f"Failed to extract frames: {e}")
                 
-                # Now extract all frames for processing
-                logger.info("Extracting all frames from video for mask application")
+                # Extract all frames directly for processing
                 all_frames_dir = os.path.join(temp_dir, "all_frames")
                 os.makedirs(all_frames_dir, exist_ok=True)
                 
@@ -249,14 +263,13 @@ def gen_track_with_mask_stream(
                 ]
                 try:
                     subprocess.run(extract_all_cmd, check=True)
-                    logger.info("Successfully extracted all frames for processing")
+                    
+                    # List all extracted frame files
+                    frame_files = sorted(glob.glob(os.path.join(all_frames_dir, "frame_*.png")))
+                    logger.info(f"Extracted {len(frame_files)} frames from video")
                 except Exception as e:
-                    logger.error(f"Error extracting all frames: {e}")
-                    raise ValueError(f"Failed to extract all frames: {e}")
-                
-                # List all extracted frame files
-                frame_files = sorted(glob.glob(os.path.join(all_frames_dir, "frame_*.png")))
-                logger.info(f"Extracted {len(frame_files)} frames from video")
+                    logger.error(f"Failed to extract frames: {e}")
+                    raise ValueError(f"Failed to extract frames: {e}")
                 
                 # Generate frames with object-only effect
                 frame_count = 0
@@ -279,11 +292,7 @@ def gen_track_with_mask_stream(
                             logger.error(f"Failed to read frame from {frame_file}")
                             continue
                             
-                        # Debug first few frames
-                        if frame_idx < 3:
-                            logger.info(f"Processing frame {frame_idx} from {frame_file}")
-                            # Save a copy of the original frame
-                            cv2.imwrite(os.path.join(debug_dir, f"direct_frame_{frame_idx}.png"), frame)
+                        # No need for debug frame saving
                     except Exception as e:
                         logger.error(f"Error reading frame {frame_idx} from extracted files: {e}")
                         continue
@@ -301,67 +310,19 @@ def gen_track_with_mask_stream(
                     # Get frame dimensions from the frame
                     height, width = frame.shape[:2]
                     
-                    # Debug frame dimensions for the first few frames
-                    if frame_idx < 3:
-                        print(f"Frame {frame_idx} - Original frame dimensions: {width}x{height}")
-                        # Save frame shape to debug file
-                        with open(os.path.join(debug_dir, f"frame_{frame_idx}_info.txt"), 'w') as f:
-                            f.write(f"Frame dimensions: {width}x{height}\n")
-                            f.write(f"Frame shape: {frame.shape}\n")
-                            f.write(f"Frame dtype: {frame.dtype}\n")
+                    # No debug needed for frame dimensions
                     
-                    # CRITICAL: Verify frame dimensions are reasonable
-                    # Check if frame dimensions are extremely unbalanced (like 4x1280)
+                    # Verify frame dimensions are reasonable
                     aspect_ratio = width / height if height > 0 else 0
                     if aspect_ratio < 0.1 or aspect_ratio > 10:
-                        logger.warning(f"Frame {frame_idx} has unusual dimensions: {width}x{height}, aspect ratio: {aspect_ratio:.2f}")
-                        # If frame is extremely narrow, try to fix it by loading the original video frame
+                        logger.warning(f"Frame {frame_idx} has unusual dimensions: {width}x{height}")
+                        # Simple dimension fix: use the dimensions we already know are correct
                         try:
-                            # This is a fallback to ensure we have reasonable frame dimensions
                             if width < 10 or height < 10:
-                                logger.warning(f"Frame {frame_idx} dimensions too small, attempting to fix")
-                                # For debugging, save the problematic frame
-                                cv2.imwrite(os.path.join(debug_dir, f"problematic_frame_{frame_idx}.png"), frame)
-                                
-                                # CRITICAL FIX: Instead of assuming 16:9, get the original video dimensions
-                                # This ensures we maintain the same proportions as the input video
-                                try:
-                                    # Get original video dimensions using OpenCV
-                                    cap = cv2.VideoCapture(video_path)
-                                    if cap.isOpened():
-                                        orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                                        orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                                        orig_aspect = orig_width / orig_height if orig_height > 0 else 16/9
-                                        cap.release()
-                                        logger.info(f"Original video dimensions: {orig_width}x{orig_height}, aspect ratio: {orig_aspect:.2f}")
-                                    else:
-                                        # Fallback to 16:9 if can't open video
-                                        orig_aspect = 16/9
-                                        logger.warning(f"Could not open video to get dimensions, using default aspect ratio: {orig_aspect}")
-                                except Exception as e:
-                                    # Fallback to 16:9 if error
-                                    orig_aspect = 16/9
-                                    logger.warning(f"Error getting video dimensions: {e}, using default aspect ratio: {orig_aspect}")
-                                
-                                # Fix dimensions based on original aspect ratio
-                                if width < 10 and height > 100:
-                                    # Likely a tall, narrow frame that should be wider
-                                    new_width = int(height * orig_aspect)  # Use original aspect ratio
-                                    logger.info(f"Adjusting frame width from {width} to {new_width} using original aspect ratio {orig_aspect:.2f}")
-                                    width = new_width
-                                    # Create a new frame with the correct dimensions by resizing
-                                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
-                                    # Save the resized frame for debugging
-                                    cv2.imwrite(os.path.join(debug_dir, f"resized_frame_{frame_idx}.png"), frame)
-                                elif height < 10 and width > 100:
-                                    # Likely a wide, short frame that should be taller
-                                    new_height = int(width / orig_aspect)  # Use original aspect ratio
-                                    logger.info(f"Adjusting frame height from {height} to {new_height} using original aspect ratio {orig_aspect:.2f}")
-                                    height = new_height
-                                    # Create a new frame with the correct dimensions by resizing
-                                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
-                                    # Save the resized frame for debugging
-                                    cv2.imwrite(os.path.join(debug_dir, f"resized_frame_{frame_idx}.png"), frame)
+                                # Use the dimensions we got from ffprobe earlier
+                                logger.info(f"Correcting frame dimensions to match video properties")
+                                # Create a new frame with the correct dimensions by resizing to video dimensions
+                                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
                         except Exception as e:
                             logger.error(f"Error fixing frame dimensions: {e}")
                     
@@ -437,14 +398,7 @@ def gen_track_with_mask_stream(
                                 # Combine with existing mask
                                 mask = np.maximum(mask, obj_mask)
                                 
-                                # Debug: After combining masks
-                                if frame_idx < 3:
-                                    non_zero_combined = np.count_nonzero(mask)
-                                    logger.info(f"Frame {frame_idx} - After combining: mask has {non_zero_combined} non-zero pixels ({non_zero_combined/mask.size*100:.2f}%)")
-                                    # Save the combined mask for debugging
-                                    combined_mask_path = os.path.join(debug_dir, f"combined_mask_{frame_idx}.png")
-                                    cv2.imwrite(combined_mask_path, mask)
-                                    print(f"Saved combined mask for frame {frame_idx} to {combined_mask_path}")
+                                # No debug needed for combined masks
                             else:
                                 logger.warning(f"Couldn't extract mask from format: {mask_data.keys()}")
                         except Exception as e:
@@ -454,19 +408,8 @@ def gen_track_with_mask_stream(
                     
                     # Apply the object-only effect
                     try:
-                        # Debug: Before converting to binary
-                        if frame_idx < 3:
-                            print(f"Frame {frame_idx} - Before binary threshold: min={mask.min()}, max={mask.max()}, mean={mask.mean():.4f}")
-                        
                         # Convert mask to binary
                         _, binary_mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-                        
-                        # Debug: Save binary mask for first few frames
-                        if frame_idx < 3:
-                            binary_mask_path = os.path.join(debug_dir, f"binary_mask_{frame_idx}.png")
-                            cv2.imwrite(binary_mask_path, binary_mask)
-                            print(f"Saved binary mask for frame {frame_idx} to {binary_mask_path}")
-                            print(f"Binary mask stats - min: {binary_mask.min()}, max: {binary_mask.max()}, unique values: {np.unique(binary_mask)}")
                         
                         # Create a normalized mask (0 or 1) for RGB channels
                         normalized_mask = binary_mask / 255.0
@@ -475,37 +418,17 @@ def gen_track_with_mask_stream(
                         # Create a 4-channel image (RGBA)
                         rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
                         
-                        # Save original frame for first few frames
-                        if frame_idx < 3:
-                            orig_frame_path = os.path.join(debug_dir, f"original_frame_{frame_idx}.png")
-                            cv2.imwrite(orig_frame_path, frame)
-                            print(f"Saved original frame {frame_idx} to {orig_frame_path}")
+                        # No need to save original frames
                         
                         # Apply the mask to the RGB channels
                         normalized_mask = binary_mask / 255.0
                         rgb_mask = np.stack([normalized_mask] * 3, axis=-1)
                         
-                        # Save RGB mask for debugging
-                        if frame_idx < 3:
-                            # Convert rgb_mask to 8-bit format for saving
-                            rgb_mask_vis = (rgb_mask * 255).astype(np.uint8)
-                            rgb_mask_path = os.path.join(debug_dir, f"rgb_mask_{frame_idx}.png")
-                            cv2.imwrite(rgb_mask_path, cv2.merge([rgb_mask_vis[:,:,2], rgb_mask_vis[:,:,1], rgb_mask_vis[:,:,0]]))
-                            print(f"Saved RGB mask for frame {frame_idx} to {rgb_mask_path}")
-                        
                         # Apply RGB mask
                         rgba[:, :, 0:3] = rgba[:, :, 0:3] * rgb_mask
                         
-                        # Debug: Check RGB values after masking
-                        if frame_idx < 3:
-                            print(f"Frame {frame_idx} - After RGB masking: unique RGB channel values: {np.unique(rgba[:,:,0:3])}")
-                        
                         # Set alpha channel (255 where object, 0 elsewhere)
                         rgba[:, :, 3] = binary_mask
-                        
-                        # Debug: Check alpha channel values
-                        if frame_idx < 3:
-                            print(f"Frame {frame_idx} - Alpha channel min: {rgba[:,:,3].min()}, max: {rgba[:,:,3].max()}, unique values: {np.unique(rgba[:,:,3])}")
                         
                         # Ensure dimensions are even for FFmpeg (yuv420p compatibility)
                         h, w = rgba.shape[:2]
@@ -518,45 +441,16 @@ def gen_track_with_mask_stream(
                             padded_rgba[:h, :w] = rgba
                             rgba = padded_rgba
                         
-                        # Print debug info for the first few frames to check color values
-                        if frame_idx < 3:
-                            # Sample a point in the mask where the object is present (if possible)
-                            y_coords, x_coords = np.where(binary_mask > 0)
-                            if len(y_coords) > 0:
-                                # Take the center point of the object
-                                center_idx = len(y_coords) // 2
-                                y, x = y_coords[center_idx], x_coords[center_idx]
-                                
-                                # Print original frame color at this point
-                                print(f"Frame {frame_idx} - Original BGR color at object point ({x},{y}): {frame[y,x]}")
-                                
-                                # Print RGBA color after mask application
-                                print(f"Frame {frame_idx} - RGBA color at same point after mask: {rgba[y,x]}")
-                                
-                                # Check a few more random points in the object
-                                for i in range(min(3, len(y_coords))):
-                                    sample_idx = (center_idx + (i+1)*len(y_coords)//4) % len(y_coords)
-                                    sy, sx = y_coords[sample_idx], x_coords[sample_idx]
-                                    print(f"Frame {frame_idx} - Sample {i+1}: Original BGR: {frame[sy,sx]}, RGBA: {rgba[sy,sx]}")
+                        # No need for debug color information
                         
-                        # Save the frame
+                        # Save the frame to both directories
                         frame_path = os.path.join(frames_dir, f"frame_{frame_idx:04d}.png")
-                        write_success = cv2.imwrite(frame_path, rgba)
+                        output_frame_path = os.path.join(frames_output_dir, f"frame_{frame_idx}.png")
                         
-                        # Debug: Verify the frame was written successfully
-                        if frame_idx < 3 or not write_success:
-                            print(f"Frame {frame_idx} - cv2.imwrite success: {write_success}")
-                            # Check if the file exists and has content
-                            if os.path.exists(frame_path):
-                                file_size = os.path.getsize(frame_path)
-                                print(f"Frame {frame_idx} - Frame file exists, size: {file_size} bytes")
-                                # For first few frames, save a copy to debug dir for easy inspection
-                                if frame_idx < 3:
-                                    debug_frame_path = os.path.join(debug_dir, f"final_frame_{frame_idx}.png")
-                                    shutil.copy(frame_path, debug_frame_path)
-                                    print(f"Copied frame {frame_idx} to {debug_frame_path}")
-                            else:
-                                print(f"Frame {frame_idx} - ERROR: Frame file does not exist!")
+                        # Save to temp dir for video creation
+                        cv2.imwrite(frame_path, rgba)
+                        # Save to output directory for user reference
+                        cv2.imwrite(output_frame_path, rgba)
                         
                         if frame_idx % 10 == 0:  # Log every 10th frame
                             logger.info(f"Processed frame {frame_idx}")
@@ -597,8 +491,8 @@ def gen_track_with_mask_stream(
                 
                 # Use FFmpeg to encode the frames to a high-quality video
                 output_path = os.path.join(temp_dir, "output.mp4")
-                debug_output_path = os.path.join(debug_dir, f"object_only_{session_id}.mp4")
-                print(f"Encoding object-only video to: {debug_output_path}")
+                debug_output_path = os.path.join(debug_dir, "object_only_video.mp4")
+                logger.info(f"Encoding object-only video to: {debug_output_path}")
                 
                 # Get original video dimensions to ensure output matches input
                 original_width = None
@@ -632,63 +526,26 @@ def gen_track_with_mask_stream(
                 
                 logger.info(f"Creating final video with dimensions {width}x{height} at {fps} FPS")
                 
-                print(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
+                logger.info("Preparing to run FFmpeg command")
                 try:
-                    # Check input files before running FFmpeg
-                    first_few_frames = sorted(os.listdir(frames_dir))[:5]
-                    print(f"First few frames in directory: {first_few_frames}")
+                    # Verify frames directory has content
+                    if not os.listdir(frames_dir):
+                        logger.error("No frames found in directory for video creation")
                     
-                    # Check file sizes and dimensions of first few frames
-                    for frame_file in first_few_frames:
-                        frame_path = os.path.join(frames_dir, frame_file)
-                        if os.path.exists(frame_path):
-                            file_size = os.path.getsize(frame_path)
-                            try:
-                                img = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
-                                if img is not None:
-                                    print(f"Frame {frame_file}: size={file_size} bytes, dimensions={img.shape}, type={img.dtype}")
-                                else:
-                                    print(f"Frame {frame_file}: size={file_size} bytes, ERROR: cv2.imread returned None")
-                            except Exception as e:
-                                print(f"Error reading frame {frame_file}: {e}")
-                    
-                    # Run FFmpeg with more verbose output for debugging
-                    print("Running FFmpeg command...")
-                    result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
-                    print("FFmpeg encoding completed successfully")
-                    print(f"FFmpeg stdout: {result.stdout}")
-                    print(f"FFmpeg stderr: {result.stderr}")
-                    
-                    # Debug: Verify output file exists and has content
-                    if os.path.exists(output_path):
-                        output_size = os.path.getsize(output_path)
-                        print(f"Output file exists, size: {output_size} bytes")
-                        
-                        # Try to extract a frame from the output to verify it's valid
-                        try:
-                            extract_cmd = [
-                                "ffmpeg",
-                                "-i", output_path,
-                                "-vframes", "1",
-                                "-f", "image2",
-                                os.path.join(debug_dir, "output_frame.png")
-                            ]
-                            subprocess.run(extract_cmd, check=True, capture_output=True, text=True)
-                            print("Successfully extracted a frame from the output video")
-                        except Exception as e:
-                            print(f"Error extracting frame from output video: {e}")
-                    else:
-                        print(f"ERROR: Output file {output_path} does not exist!")
+                    # Run FFmpeg to create the final video
+                    logger.info("Running FFmpeg to create final video")
+                    subprocess.run(ffmpeg_cmd, check=True)
+                    logger.info("FFmpeg encoding completed successfully")
                     
                     # Verify the output file exists and has size
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                         # Save a copy to the debug directory
                         shutil.copy2(output_path, debug_output_path)
-                        print(f"Saved object-only video to {debug_output_path}")
+                        logger.info(f"Saved object-only video to {debug_output_path}")
                     else:
-                        print(f"Output file missing or empty: {output_path}")
+                        logger.error(f"Output file missing or empty: {output_path}")
                 except subprocess.CalledProcessError as e:
-                    print(f"FFmpeg error: {e.stderr}")
+                    logger.error(f"FFmpeg error: {e}")
                     
         except Exception as e:
             logger.exception(f"Error generating object-only video: {str(e)}")
