@@ -25,9 +25,7 @@ const ACCEPT_VIDEOS = {
   'video/quicktime': ['.mov'],
 };
 
-// 70 MB default max video upload size
-const MAX_FILE_SIZE_IN_MB = 70;
-const MAX_VIDEO_UPLOAD_SIZE = MAX_FILE_SIZE_IN_MB * 1024 ** 2;
+// Removed file size limit
 
 type Props = {
   onUpload: (video: VideoData) => void;
@@ -71,13 +69,7 @@ export default function useUploadVideo({
       // rejected file has an error (e.g., 'file-too-large'). Rendering an
       // appropriate message.
       if (fileRejections.length > 0 && fileRejections[0].errors.length > 0) {
-        const code = fileRejections[0].errors[0].code;
-        if (code === 'file-too-large') {
-          setError(
-            `File too large. Try a video under ${MAX_FILE_SIZE_IN_MB} MB`,
-          );
-          return;
-        }
+        // File size checks and limitations have been removed
       }
 
       if (acceptedFiles.length === 0) {
@@ -111,7 +103,7 @@ export default function useUploadVideo({
       Logger.error(error);
       setError('File not supported.');
     },
-    maxSize: MAX_VIDEO_UPLOAD_SIZE,
+    // Removed maxSize limitation
   });
 
   return {
