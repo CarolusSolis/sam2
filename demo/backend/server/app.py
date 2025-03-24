@@ -203,33 +203,13 @@ def gen_track_with_mask_stream(
             debug_base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_videos")
             os.makedirs(debug_base_dir, exist_ok=True)
             
-            # Create session-specific directory using just the session ID
-            debug_dir = os.path.join(debug_base_dir, get_est_timestamp())
+            # Create session-specific directory using timestamp
+            timestamp_dir = get_est_timestamp()
+            debug_dir = os.path.join(debug_base_dir, timestamp_dir)
             os.makedirs(debug_dir, exist_ok=True)
-            
-            # Create directory for object-only frames
-            frames_output_dir = os.path.join(debug_dir, "object_only_frames")
-            os.makedirs(frames_output_dir, exist_ok=True)
-            
-            # Create directory for mask frames
-            mask_frames_dir = os.path.join(debug_dir, "mask_frames")
-            os.makedirs(mask_frames_dir, exist_ok=True)
-            
-            # Copy original video to debug directory
-            original_video_output = os.path.join(debug_dir, "original_video.mp4")
-            try:
-                shutil.copy(video_path, original_video_output)
-                logger.info(f"Copied original video to {original_video_output}")
-            except Exception as e:
-                logger.warning(f"Failed to copy original video: {e}")
             
             # Create temporary directories for frames and output
             with tempfile.TemporaryDirectory() as temp_dir:
-                frames_dir = os.path.join(temp_dir, "frames")
-                mask_frames_dir_temp = os.path.join(temp_dir, "mask_frames")
-                os.makedirs(frames_dir, exist_ok=True)
-                os.makedirs(mask_frames_dir_temp, exist_ok=True)
-                
                 # Sort frames by index to ensure correct order
                 all_frames_with_masks.sort(key=lambda x: x['frame_index'])
                 
@@ -306,8 +286,6 @@ def gen_track_with_mask_stream(
                         if frame is None:
                             logger.error(f"Failed to read frame from {frame_file}")
                             continue
-                            
-                        # No need for debug frame saving
                     except Exception as e:
                         logger.error(f"Error reading frame {frame_idx} from extracted files: {e}")
                         continue
@@ -324,8 +302,6 @@ def gen_track_with_mask_stream(
                     # Create a mask from the results
                     # Get frame dimensions from the frame
                     height, width = frame.shape[:2]
-                    
-                    # No debug needed for frame dimensions
                     
                     # Verify frame dimensions are reasonable
                     aspect_ratio = width / height if height > 0 else 0
@@ -348,7 +324,7 @@ def gen_track_with_mask_stream(
                     for mask_data in frame_data['results']:
                         try:
                             import pycocotools.mask as mask_util
-                            # Process only RLE format masks - the simple, elegant solution
+                            # Process only RLE format masks
                             obj_mask = None
                             
                             # Only handle RLE format masks
@@ -359,27 +335,12 @@ def gen_track_with_mask_stream(
                                 # Debug: Print RLE mask details
                                 logger.info(f"RLE mask size: {rle['size']}, counts length: {len(rle['counts'])}")
                                 
-                                # Save RLE details for first few frames
-                                if frame_idx < 3:
-                                    print(f"Frame {frame_idx} - RLE: size={rle['size']}, counts (first 50 chars): {str(rle['counts'])[:50]}")
-                                    
                                 # CRITICAL FIX: Check if the frame dimensions match the RLE mask dimensions
                                 # The model may be using square frames internally but returning masks for the original video dimensions
                                 rle_height, rle_width = rle['size']
                                 
-                                # Debug the frame dimensions vs RLE dimensions
-                                if frame_idx < 3:
-                                    print(f"Frame {frame_idx} - Frame dimensions: {width}x{height}, RLE mask dimensions: {rle_width}x{rle_height}")
-                                
                                 # Decode RLE to binary mask
                                 obj_mask = mask_util.decode(rle)
-                                
-                                # Debug: Save raw decoded mask for first few frames
-                                if frame_idx < 3:
-                                    debug_mask_path = os.path.join(debug_dir, f"raw_mask_{frame_idx}.png")
-                                    cv2.imwrite(debug_mask_path, obj_mask * 255)
-                                    print(f"Saved raw mask for frame {frame_idx} to {debug_mask_path}")
-                                    print(f"Raw mask stats - min: {obj_mask.min()}, max: {obj_mask.max()}, mean: {obj_mask.mean():.4f}")
                                 
                                 obj_mask = obj_mask * 255
                                 
@@ -412,8 +373,6 @@ def gen_track_with_mask_stream(
                                 
                                 # Combine with existing mask
                                 mask = np.maximum(mask, obj_mask)
-                                
-                                # No debug needed for combined masks
                             else:
                                 logger.warning(f"Couldn't extract mask from format: {mask_data.keys()}")
                         except Exception as e:
@@ -454,28 +413,16 @@ def gen_track_with_mask_stream(
                             padded_rgba[:h, :w] = rgba
                             rgba = padded_rgba
                         
-                        # No need for debug color information
-                        
-                        # Save the frame to both directories
-                        frame_path = os.path.join(frames_dir, f"frame_{frame_idx:04d}.png")
-                        output_frame_path = os.path.join(frames_output_dir, f"frame_{frame_idx}.png")
-                        
-                        # Save to temp dir for video creation
-                        cv2.imwrite(frame_path, rgba)
-                        # Save to output directory for user reference
+                        # Save the frame directly to the timestamp directory with the requested naming pattern
+                        output_frame_path = os.path.join(debug_dir, f"frame_{frame_idx}.png")
                         cv2.imwrite(output_frame_path, rgba)
                         
-                        # Save mask frames
-                        # Create a mask frame (white for mask, black elsewhere)
+                        # Save mask frame with the requested naming pattern
                         mask_frame = np.zeros((rgba.shape[0], rgba.shape[1]), dtype=np.uint8)
                         mask_frame[binary_mask > 0] = 255
                         
-                        # Save mask to temp dir for video creation
-                        mask_frame_path = os.path.join(mask_frames_dir_temp, f"mask_{frame_idx:04d}.png")
-                        cv2.imwrite(mask_frame_path, mask_frame)
-                        
-                        # Save mask to output directory for user reference
-                        mask_output_path = os.path.join(mask_frames_dir, f"mask_{frame_idx}.png")
+                        # Save mask to the timestamp directory with the requested naming pattern
+                        mask_output_path = os.path.join(debug_dir, f"frame_{frame_idx}.png.mask.png")
                         cv2.imwrite(mask_output_path, mask_frame)
                         
                         if frame_idx % 10 == 0:  # Log every 10th frame
@@ -483,129 +430,13 @@ def gen_track_with_mask_stream(
                     except Exception as e:
                         logger.exception(f"Error processing frame {frame_idx}: {str(e)}")
                 
-                logger.info(f"Processed {frame_count} frames successfully for object-only video")
+                logger.info(f"Processed {frame_count} frames successfully")
                 
                 if frame_count == 0:
-                    logger.error("No frames were processed - cannot create object-only video")
-                    return
-                
-                # List the frames to verify they exist
-                frame_files = sorted(os.listdir(frames_dir))
-                print(f"Found {len(frame_files)} frame files in temp directory")
-                if not frame_files:
-                    print("No frame files found in the temporary directory")
-                    # Debug: Output the directory structure for troubleshooting
-                    print(f"Directory structure for debugging:")
-                    for root, dirs, files in os.walk(temp_dir):
-                        logger.debug(f"Directory: {root}")
-                        logger.debug(f"Files: {files}")
-                    return
-                    
-                # Use a start index that actually exists
-                first_frame = frame_files[0]
-                try:
-                    pattern_match = re.search(r'frame_(\d+)\.png', first_frame)
-                    if pattern_match:
-                        start_number = int(pattern_match.group(1))
-                        logger.info(f"Detected start frame number: {start_number}")
-                    else:
-                        start_number = 0
-                        logger.warning(f"Could not detect start number from {first_frame}, using 0")
-                except Exception as e:
-                    start_number = 0
-                    logger.warning(f"Error parsing first frame name: {e}, using start_number=0")
-                
-                # Use FFmpeg to encode the frames to a high-quality video
-                output_path = os.path.join(temp_dir, "output.mp4")
-                mask_output_path = os.path.join(temp_dir, "mask_output.mp4")
-                debug_output_path = os.path.join(debug_dir, "object_only_video.mp4")
-                mask_debug_output_path = os.path.join(debug_dir, "mask_video.mp4")
-                logger.info(f"Encoding object-only video to: {debug_output_path}")
-                
-                # Get original video dimensions to ensure output matches input
-                original_width = None
-                original_height = None
-                try:
-                    # Get original video dimensions using OpenCV
-                    cap = cv2.VideoCapture(video_path)
-                    if cap.isOpened():
-                        original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        # Ensure dimensions are even for yuv420p
-                        original_width += original_width % 2
-                        original_height += original_height % 2
-                        cap.release()
-                        logger.info(f"Original video dimensions: {original_width}x{original_height}")
-                except Exception as e:
-                    logger.warning(f"Error getting original video dimensions: {e}")
-                
-                # Use FFmpeg to create the final video with original dimensions and quality
-                ffmpeg_cmd = [
-                    "ffmpeg",
-                    "-y",                   # Overwrite output file if it exists
-                    "-framerate", str(fps),  # Use the original video's framerate
-                    "-i", os.path.join(frames_dir, "frame_%04d.png"),  # Input frames
-                    "-c:v", "libx264",     # H.264 codec
-                    "-crf", "17",          # High quality (0-51, lower is better)
-                    "-preset", "medium",    # Better balance between speed and quality
-                    "-pix_fmt", "yuv420p", # Standard pixel format for compatibility
-                    output_path              # Output file
-                ]
-                
-                logger.info(f"Creating final video with dimensions {width}x{height} at {fps} FPS")
-                
-                logger.info("Preparing to run FFmpeg command")
-                try:
-                    # Verify frames directory has content
-                    if not os.listdir(frames_dir):
-                        logger.error("No frames found in directory for video creation")
-                    
-                    # Run FFmpeg to create the final object-only video
-                    logger.info("Running FFmpeg to create final object-only video")
-                    subprocess.run(ffmpeg_cmd, check=True)
-                    logger.info("Object-only video encoding completed successfully")
-                    
-                    # Create FFmpeg command for mask video
-                    mask_ffmpeg_cmd = [
-                        "ffmpeg",
-                        "-y",                   # Overwrite output file if it exists
-                        "-framerate", str(fps),  # Use the original video's framerate
-                        "-i", os.path.join(mask_frames_dir_temp, "mask_%04d.png"),  # Input frames
-                        "-c:v", "libx264",     # H.264 codec
-                        "-crf", "17",          # High quality (0-51, lower is better)
-                        "-preset", "medium",    # Better balance between speed and quality
-                        "-pix_fmt", "yuv420p", # Standard pixel format for compatibility
-                        mask_output_path        # Output file
-                    ]
-                    
-                    # Verify mask frames directory has content
-                    if not os.listdir(mask_frames_dir_temp):
-                        logger.error("No mask frames found in directory for video creation")
-                    else:
-                        # Run FFmpeg to create the mask video
-                        logger.info("Running FFmpeg to create mask video")
-                        subprocess.run(mask_ffmpeg_cmd, check=True)
-                        logger.info("Mask video encoding completed successfully")
-                    
-                    # Verify the output files exist and have size
-                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                        # Save a copy of object-only video to the debug directory
-                        shutil.copy2(output_path, debug_output_path)
-                        logger.info(f"Saved object-only video to {debug_output_path}")
-                    else:
-                        logger.error(f"Object-only output file missing or empty: {output_path}")
-                        
-                    if os.path.exists(mask_output_path) and os.path.getsize(mask_output_path) > 0:
-                        # Save a copy of mask video to the debug directory
-                        shutil.copy2(mask_output_path, mask_debug_output_path)
-                        logger.info(f"Saved mask video to {mask_debug_output_path}")
-                    else:
-                        logger.error(f"Mask video output file missing or empty: {mask_output_path}")
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"FFmpeg error: {e}")
+                    logger.error("No frames were processed")
                     
         except Exception as e:
-            logger.exception(f"Error generating object-only video: {str(e)}")
+            logger.exception(f"Error generating frames and masks: {str(e)}")
 
 
 class MyGraphQLView(GraphQLView):
