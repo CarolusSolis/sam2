@@ -15,6 +15,15 @@ import numpy as np
 import cv2
 import sys
 from typing import Any, Generator
+import pytz
+from datetime import datetime
+
+def get_est_timestamp():
+    """Get a timezone-aware timestamp in EST"""
+    est = pytz.timezone('America/New_York')
+    dt = datetime.now(est)
+    return dt.strftime('%Y%m%d%H%M%S%f')
+
 
 # Configure logging to output to stdout with appropriate level
 logging.basicConfig(
@@ -195,12 +204,16 @@ def gen_track_with_mask_stream(
             os.makedirs(debug_base_dir, exist_ok=True)
             
             # Create session-specific directory using just the session ID
-            debug_dir = os.path.join(debug_base_dir, session_id)
+            debug_dir = os.path.join(debug_base_dir, get_est_timestamp())
             os.makedirs(debug_dir, exist_ok=True)
             
             # Create directory for object-only frames
             frames_output_dir = os.path.join(debug_dir, "object_only_frames")
             os.makedirs(frames_output_dir, exist_ok=True)
+            
+            # Create directory for mask frames
+            mask_frames_dir = os.path.join(debug_dir, "mask_frames")
+            os.makedirs(mask_frames_dir, exist_ok=True)
             
             # Copy original video to debug directory
             original_video_output = os.path.join(debug_dir, "original_video.mp4")
@@ -213,7 +226,9 @@ def gen_track_with_mask_stream(
             # Create temporary directories for frames and output
             with tempfile.TemporaryDirectory() as temp_dir:
                 frames_dir = os.path.join(temp_dir, "frames")
+                mask_frames_dir_temp = os.path.join(temp_dir, "mask_frames")
                 os.makedirs(frames_dir, exist_ok=True)
+                os.makedirs(mask_frames_dir_temp, exist_ok=True)
                 
                 # Sort frames by index to ensure correct order
                 all_frames_with_masks.sort(key=lambda x: x['frame_index'])
@@ -418,8 +433,6 @@ def gen_track_with_mask_stream(
                         # Create a 4-channel image (RGBA)
                         rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
                         
-                        # No need to save original frames
-                        
                         # Apply the mask to the RGB channels
                         normalized_mask = binary_mask / 255.0
                         rgb_mask = np.stack([normalized_mask] * 3, axis=-1)
@@ -451,6 +464,19 @@ def gen_track_with_mask_stream(
                         cv2.imwrite(frame_path, rgba)
                         # Save to output directory for user reference
                         cv2.imwrite(output_frame_path, rgba)
+                        
+                        # Save mask frames
+                        # Create a mask frame (white for mask, black elsewhere)
+                        mask_frame = np.zeros((rgba.shape[0], rgba.shape[1]), dtype=np.uint8)
+                        mask_frame[binary_mask > 0] = 255
+                        
+                        # Save mask to temp dir for video creation
+                        mask_frame_path = os.path.join(mask_frames_dir_temp, f"mask_{frame_idx:04d}.png")
+                        cv2.imwrite(mask_frame_path, mask_frame)
+                        
+                        # Save mask to output directory for user reference
+                        mask_output_path = os.path.join(mask_frames_dir, f"mask_{frame_idx}.png")
+                        cv2.imwrite(mask_output_path, mask_frame)
                         
                         if frame_idx % 10 == 0:  # Log every 10th frame
                             logger.info(f"Processed frame {frame_idx}")
@@ -491,7 +517,9 @@ def gen_track_with_mask_stream(
                 
                 # Use FFmpeg to encode the frames to a high-quality video
                 output_path = os.path.join(temp_dir, "output.mp4")
+                mask_output_path = os.path.join(temp_dir, "mask_output.mp4")
                 debug_output_path = os.path.join(debug_dir, "object_only_video.mp4")
+                mask_debug_output_path = os.path.join(debug_dir, "mask_video.mp4")
                 logger.info(f"Encoding object-only video to: {debug_output_path}")
                 
                 # Get original video dimensions to ensure output matches input
@@ -532,18 +560,47 @@ def gen_track_with_mask_stream(
                     if not os.listdir(frames_dir):
                         logger.error("No frames found in directory for video creation")
                     
-                    # Run FFmpeg to create the final video
-                    logger.info("Running FFmpeg to create final video")
+                    # Run FFmpeg to create the final object-only video
+                    logger.info("Running FFmpeg to create final object-only video")
                     subprocess.run(ffmpeg_cmd, check=True)
-                    logger.info("FFmpeg encoding completed successfully")
+                    logger.info("Object-only video encoding completed successfully")
                     
-                    # Verify the output file exists and has size
+                    # Create FFmpeg command for mask video
+                    mask_ffmpeg_cmd = [
+                        "ffmpeg",
+                        "-y",                   # Overwrite output file if it exists
+                        "-framerate", str(fps),  # Use the original video's framerate
+                        "-i", os.path.join(mask_frames_dir_temp, "mask_%04d.png"),  # Input frames
+                        "-c:v", "libx264",     # H.264 codec
+                        "-crf", "17",          # High quality (0-51, lower is better)
+                        "-preset", "medium",    # Better balance between speed and quality
+                        "-pix_fmt", "yuv420p", # Standard pixel format for compatibility
+                        mask_output_path        # Output file
+                    ]
+                    
+                    # Verify mask frames directory has content
+                    if not os.listdir(mask_frames_dir_temp):
+                        logger.error("No mask frames found in directory for video creation")
+                    else:
+                        # Run FFmpeg to create the mask video
+                        logger.info("Running FFmpeg to create mask video")
+                        subprocess.run(mask_ffmpeg_cmd, check=True)
+                        logger.info("Mask video encoding completed successfully")
+                    
+                    # Verify the output files exist and have size
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                        # Save a copy to the debug directory
+                        # Save a copy of object-only video to the debug directory
                         shutil.copy2(output_path, debug_output_path)
                         logger.info(f"Saved object-only video to {debug_output_path}")
                     else:
-                        logger.error(f"Output file missing or empty: {output_path}")
+                        logger.error(f"Object-only output file missing or empty: {output_path}")
+                        
+                    if os.path.exists(mask_output_path) and os.path.getsize(mask_output_path) > 0:
+                        # Save a copy of mask video to the debug directory
+                        shutil.copy2(mask_output_path, mask_debug_output_path)
+                        logger.info(f"Saved mask video to {mask_debug_output_path}")
+                    else:
+                        logger.error(f"Mask video output file missing or empty: {mask_output_path}")
                 except subprocess.CalledProcessError as e:
                     logger.error(f"FFmpeg error: {e}")
                     
