@@ -42,8 +42,8 @@ def transcode(
     codec = os.environ.get("VIDEO_ENCODE_CODEC", "libx264")
     crf = int(os.environ.get("VIDEO_ENCODE_CRF", "23"))
     fps = int(os.environ.get("VIDEO_ENCODE_FPS", "24"))
-    max_w = int(os.environ.get("VIDEO_ENCODE_MAX_WIDTH", "1280"))
-    max_h = int(os.environ.get("VIDEO_ENCODE_MAX_HEIGHT", "720"))
+    max_w = int(os.environ.get("VIDEO_ENCODE_MAX_WIDTH", "3840"))
+    max_h = int(os.environ.get("VIDEO_ENCODE_MAX_HEIGHT", "2160"))
     verbose = ast.literal_eval(os.environ.get("VIDEO_ENCODE_VERBOSE", "False"))
 
     normalize_video(
@@ -141,10 +141,10 @@ def normalize_video(
     # rescale to max_w:max_h if needed & preserve aspect ratio
     r = w / h
     if r < 1:
-        h = min(720, h)
+        h = min(max_h, h)
         w = h * r
     else:
-        w = min(1280, w)
+        w = min(max_w, w)
         h = w / r
 
     # h264 cannot encode w/ odd dimensions
