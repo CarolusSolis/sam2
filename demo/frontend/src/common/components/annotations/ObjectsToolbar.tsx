@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import AddObjectButton from '@/common/components/annotations/AddObjectButton';
+// AddObjectButton import removed since we only support one object
 import FirstClickView from '@/common/components/annotations/FirstClickView';
 import LimitNotice from '@/common/components/annotations/LimitNotice';
 import ObjectsToolbarBottomActions from '@/common/components/annotations/ObjectsToolbarBottomActions';
@@ -23,7 +23,6 @@ import ToolbarObject from '@/common/components/annotations/ToolbarObject';
 import {
   activeTrackletObjectAtom,
   activeTrackletObjectIdAtom,
-  isAddObjectEnabledAtom,
   isFirstClickMadeAtom,
   isTrackletObjectLimitReachedAtom,
   trackletObjectsAtom,
@@ -40,7 +39,6 @@ export default function ObjectsToolbar({onTabChange}: Props) {
   const setActiveTrackletId = useSetAtom(activeTrackletObjectIdAtom);
   const isFirstClickMade = useAtomValue(isFirstClickMadeAtom);
   const isObjectLimitReached = useAtomValue(isTrackletObjectLimitReachedAtom);
-  const isAddObjectEnabled = useAtomValue(isAddObjectEnabledAtom);
 
   if (!isFirstClickMade) {
     return <FirstClickView />;
@@ -63,7 +61,7 @@ export default function ObjectsToolbar({onTabChange}: Props) {
             />
           );
         })}
-        {isAddObjectEnabled && <AddObjectButton />}
+        {/* "Add another object" button removed since we only support one object */}
         {isObjectLimitReached && <LimitNotice />}
       </div>
       <ObjectsToolbarBottomActions onTabChange={onTabChange} />

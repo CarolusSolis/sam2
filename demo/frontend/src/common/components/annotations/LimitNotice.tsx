@@ -22,8 +22,7 @@ export default function LimitNotice() {
         <InformationFilled size={32} />
       </div>
       <div className="text-sm leading-snug">
-        In this demo, you can track up to 3 objects, even though the SAM 2 model
-        does not have a limit.
+        You can only track one object at a time in our usage.
       </div>
     </div>
   );
