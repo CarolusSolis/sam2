@@ -162,14 +162,25 @@ def gen_track_with_mask_stream(
                 body=chunk.to_json().encode("UTF-8"),
             ).get_message()
         
-        # After propagation is complete, generate the object-only video
-        logger.info(f"Propagation complete for session {session_id}, generating object-only video")
+        # After propagation is complete, generate the object-only video in a background thread
+        logger.info(f"Propagation complete for session {session_id}, starting object-only video generation in background")
         
         try:
+            import threading
             out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "object_only_videos")
-            write_object_only_video(out_dir, inference_api, session_id, all_frames_with_masks)
+            
+            # Create a thread to run the video generation in the background
+            video_thread = threading.Thread(
+                target=write_object_only_video,
+                args=(out_dir, inference_api, session_id, all_frames_with_masks),
+                daemon=True  # This ensures the thread won't block app shutdown
+            )
+            
+            # Start the thread and continue immediately
+            video_thread.start()
+            logger.info(f"Background thread started for object-only video generation (session {session_id})")
         except Exception as e:
-            logger.exception(f"Error generating object-only video: {str(e)}")
+            logger.exception(f"Error starting background video generation: {str(e)}")
 
 # --------------- HELPER FUNCTIONS ---------------
 def write_object_only_video(out_dir, inference_api, session_id, all_frames_with_masks):
